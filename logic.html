@@ -1,0 +1,740 @@
+<html><head>
+<meta http-equiv="content-type" content="text/html; charset=windows-1252">
+
+<title>logic</title>
+
+<style type="text/css">
+
+
+	body { color: #404050; }
+  *.main_link {position:relative; cursor: pointer;  left: 10px;  font-weight:bold; user-select: none;  -moz-user-select: -moz-none;   -khtml-user-select: none;   -webkit-user-select: none;   }
+  *.header {color:#3333dd; font-weight:bold;}
+ </style>
+
+<script src="object.js"></script>
+<script src="graphics.js"></script>
+<script src="data_source.js"></script>
+<script src="backend_link.js"></script>
+
+<script type="application/javascript">
+
+/* 
+	logic engine
+	(C) 2013 Jason Hunt
+	nulluser@gmail.com
+*/
+
+"use strict";
+
+// Parameters
+var snap = 5;
+var min_zoom = 0.05;
+var update_rate = 10;
+
+var obj = new Array();
+
+var ui_mode = "none";
+var ui_addtype = "";
+var sel_obj = -1;
+var obj_x_ofs = 0;
+var obj_y_ofs = 0;
+var has_moved = 0;
+var show_guide = 1;
+var mouse_state = "up";
+var mouse_x = 0;
+var mouse_y = 0;
+var	x_ofs_start = 0;
+var	y_ofs_start = 0;
+
+var updates = 0;
+
+// Pan / Zoom
+var zoom = 1;
+var x_ofs = 0;
+var y_ofs = 0;
+
+/* 
+	High level UI 
+*/
+
+
+function start()
+{
+	// Map mouse functions
+	document.onmouseup = mouse_up; 
+	document.onmousedown = mouse_down; 
+	document.onmousemove = mouse_move; 
+
+	// Mouse wheel, FF
+	if (window.addEventListener)
+        window.addEventListener('DOMMouseScroll', mouse_wheel, false);
+
+	// Mouse Wheel IE
+	window.onmousewheel = document.onmousewheel = mouse_wheel;
+
+	document.onkeypress = key_press; 
+
+	update_canvas();
+
+	set_timer();
+
+	update();
+	
+	//test_scope();
+	
+	backend_start();
+
+	data_source_start();
+	
+}
+
+
+window.onresize = function() 
+{
+	update_canvas();
+}
+
+
+function update_canvas()
+{
+	var canvas = document.getElementById("canvas");
+	canvas.width = window.innerWidth-140;
+	canvas.height = window.innerHeight-2;
+}
+
+
+function debug(m)
+{
+	document.getElementById("debug").innerHTML =m + "<br>" + 	document.getElementById("debug").innerHTML;
+	//alert(m);
+}
+
+
+function draw_display()
+{
+ 	var canvas = document.getElementById("canvas");
+ 	var ctx = canvas.getContext("2d");
+	
+	draw_objects(ctx, obj, canvas.width, canvas.height);
+}
+
+
+function update( )
+{
+	solve_system(obj);
+	
+	draw_display();
+	
+	updates++;
+	
+	//debug("Update: " + updates);
+}
+
+
+function set_timer() 
+{ 
+//	debug("set timer");
+		
+	setInterval(function() { update(); }.bind(this), 1000/update_rate);
+}
+
+/* 
+	End of high level UI 
+*/
+
+
+/*
+	Keyboard / Mouse 
+*/
+
+function mouse_pos(ev)
+{
+	var canvas_x_ofs = document.getElementById("canvas").offsetLeft;
+	var canvas_y_ofs = document.getElementById("canvas").offsetTop;
+
+
+	if(ev.pageX || ev.pageY)
+	{ 
+		return {x:ev.pageX - canvas_x_ofs, y:ev.pageY - canvas_y_ofs}; 
+	} 
+	
+	return 	{ x:ev.clientX + document.body.scrollLeft - document.body.clientLeft  - canvas_x_ofs, 
+			  y:ev.clientY + document.body.scrollTop  - document.body.clientTop   - canvas_y_ofs}; 
+} 
+
+
+function mouse_up(ev)
+{ 
+	var pos = mouse_pos(ev);    		
+	//document.getElementById("debug").innerHTML += "Up  " + pos.x + " " + pos.y +"<br>";
+
+	mouse_state = "up";
+
+	if (ui_mode == "moving")
+	{
+
+		if (!has_moved)
+		{
+			select_object(obj[sel_obj]);
+		}
+		else
+		{
+		
+		
+		backend_moveobject(sel_obj, obj[sel_obj].id, obj[sel_obj].x_pos, obj[sel_obj].y_pos);
+		
+		
+		for (var i in obj[sel_obj].guides)
+		{
+		
+			var k = obj[sel_obj].guides[i];
+			//debug (i);
+			backend_moveobject(k, obj[k].id, obj[k].x_pos, obj[k].y_pos);		
+		
+		
+		}
+		
+
+		}
+			
+		set_mode("none");
+	
+	} 		
+
+	draw_display();
+} 
+
+
+function ui_add_pipe1(pos) 
+{
+	//add_object(pos.x, pos.y, "pipe");
+
+	var i = find_object(pos.x, pos.y) 
+
+	if (i != -1 && obj[i].type == "guide")
+	{
+		obj[i].selected  =1;
+
+		ui_mode = "add_pipe2";
+		sel_obj = i;
+
+		draw_display();
+	} else
+		ui_mode = "none";
+}
+
+
+function ui_add_pipe2(pos)
+{
+	var i = find_object(pos.x, pos.y) 
+
+	if (i != -1 && i != sel_obj)
+	{
+		if (obj[sel_obj].type == "guide" && obj[i].type == "guide")
+		{
+			object_connect(sel_obj, i);
+			draw_display();
+		}
+
+		obj[i].selected  =0;
+		obj[sel_obj].selected  =0;
+
+		ui_mode = "add_pipe";
+	} else
+		set_mode ("none");
+}
+
+
+function ui_move_object(pos, i)
+{
+	if (obj[i].attached == -1)
+	{
+		obj_x_ofs = get_world_x(pos.x) - obj[i].x_pos;
+		obj_y_ofs = get_world_y(pos.y) - obj[i].y_pos;
+
+		//obj[i].selected = 1;//!obj[i].selected;
+
+		draw_display();
+
+		sel_obj = i;
+		set_mode("moving");
+	}
+}
+
+
+function ui_delete_object(pos)
+{
+	var i = find_object(pos.x, pos.y);
+
+	if (i != -1)
+		delete_object(i);
+
+	set_mode("none");
+}
+
+
+function ui_unhook_object(pos)
+{
+	var i = find_object(pos.x, pos.y);
+
+	if (i != -1)
+	{
+		unhook_object(i);
+	}
+
+	set_mode("none");
+} 
+
+
+function ui_add_object(pos)
+{
+	add_object(obj, pos.x, pos.y, ui_addtype, 0,1); 
+	ui_mode = "none";
+	ui_addtype = "";
+
+}
+
+
+function mouse_down(ev)
+{ 
+ 	var pos = mouse_pos(ev); 
+
+	mouse_state = "down";
+	
+	x_ofs_start = x_ofs;	
+	y_ofs_start = y_ofs;
+	
+	mouse_x = pos.x;
+	mouse_y = pos.y;
+	
+	//document.getElementById("debug").innerHTML += "Down  " + pos.x + " " + pos.y +"<br>";
+	//debug("mode: " + ui_mode);
+
+	has_moved = 0;
+	
+	if (pos.x < 0 || pos.y < 0) return;
+
+	if (ui_mode == "none")// No mode, either find an obj or clear mode
+	{
+		var i = find_object(pos.x, pos.y);
+
+		if (i == -1) // No object found, go clear selection
+		{
+			select_none();
+		} else
+		{
+			ui_move_object(pos, i);
+		}
+
+	} else		
+	if (ui_mode == "add_object") ui_add_object(pos); else		// Add generic object
+	if (ui_mode == "add_pipe")   ui_add_pipe1(pos); else 		// Select first object for adding wire
+	if (ui_mode == "add_pipe2")  ui_add_pipe2(pos); else		// Select second object for adding wire
+	if (ui_mode == "delete")     ui_delete_object(pos); else	// Delete
+	if (ui_mode == "unhook")     ui_unhook_object(pos); else	// Unhook
+
+		set_mode("none");
+
+	draw_display();
+} 
+
+
+function snap_val(x)
+{
+	return (Math.round((x)/snap)*snap);
+}
+
+
+function mouse_move(ev)
+{ 
+ 	var pos = mouse_pos(ev); 
+
+
+	if (ui_mode == "moving")
+	{
+		
+		var new_x = snap_val(get_world_x(pos.x) - obj_x_ofs);
+		var new_y = snap_val(get_world_y(pos.y) - obj_y_ofs);
+
+		var delta_x = new_x - obj[sel_obj].x_pos ;
+		var delta_y = new_y - obj[sel_obj].y_pos;
+
+
+		obj[sel_obj].x_pos = new_x;
+		obj[sel_obj].y_pos = new_y;
+
+
+		for(var j in obj[sel_obj].guides)
+		{
+			var k = obj[sel_obj].guides[j];
+
+			obj[k].x_pos += delta_x;
+			obj[k].y_pos += delta_y;
+		}
+
+		draw_display();
+	} else
+
+
+	// Pan grid if dragging mouse
+	if (mouse_state == "down")
+	{
+		var dx = pos.x - mouse_x;		
+		var dy = pos.y - mouse_y;
+		
+	
+		x_ofs = x_ofs_start + dx;
+		y_ofs = y_ofs_start + dy;
+		
+		//debug(x_ofs + " " + y_ofs);
+	}
+
+
+	has_moved = 1;
+}
+
+
+function mouse_wheel( event )
+{
+   var delta = 0;
+
+   if (!event)
+   	event = window.event;
+   	
+   	if (event.wheelDelta) 
+    { 
+    	delta = event.wheelDelta/120;
+    } else 
+    if (event.detail) 
+    {
+    	delta = -event.detail/3;
+    }
+
+	var zoom_factor = 1 + delta * 0.05;
+
+    zoom *= zoom_factor;       
+
+    if (zoom < min_zoom) 
+    	zoom = min_zoom;
+   
+            
+	// Recompute offsets for new zoom 
+	var canvas = document.getElementById("canvas");
+        
+    var cx = canvas.width / 2.0;
+	var cy = canvas.height / 2.0;    
+        
+    x_ofs = (x_ofs - cx) * zoom_factor + cx;
+    y_ofs = (y_ofs - cy) * zoom_factor + cy;
+           
+                
+    if (event.preventDefault) event.preventDefault();
+	
+	event.returnValue = false;
+
+	//debug("zoom: " + zoom);
+}
+
+
+function key_press(ev)
+{
+ 	var ch = (typeof ev.which == "number") ? ev.which : ev.keyCode;
+}
+
+/*
+	End keyboard / Mouse
+*/
+
+
+/*
+	UI Service 
+*/
+
+function set_guide(s)
+{
+	if (s == "show") show_guide = 1;
+	if (s == "hide") show_guide = 0;
+
+	draw_display();
+}
+
+
+function show_div(name)
+{
+	document.getElementById(name).style.display = "block";
+}
+
+
+function hide_div(name)
+{
+	document.getElementById(name).style.display = "none";
+}
+
+
+function hide_all()
+{
+	hide_div("binput_data");
+	hide_div("boutput_data");
+	hide_div("httpsource_data");	
+}
+	
+
+function select_none()
+{
+	hide_all();
+
+	for (var i in obj)
+		obj[i].selected = 0;
+	
+	sel_obj = -1;
+	
+		
+}
+
+
+function get_value(name)
+{
+	return Number(document.getElementById(name).value);
+}
+
+
+function set_value(name, value)
+{
+	document.getElementById(name).value = value;
+}
+
+
+function select_object( o )
+{
+	if (o.selected == 1)
+	{
+		object_toggle(o);
+		return;
+	}
+
+	// Clear all selections
+	for (var i in obj)
+		obj[i].selected = 0;
+
+	hide_all();
+		
+	o.selected = 1;
+
+	if (o.type == "binput")
+	{
+		show_div("binput_data");
+		set_value("binput_output", o.output);
+		
+			debug(o.id);
+			
+
+	}
+	
+	
+	if (o.type == "httpsource")
+	{
+		show_div("httpsource_data");
+		set_value("httpsource_name", o.source_name);
+	}
+	
+	
+	
+
+	draw_display();
+}
+
+
+function save_properties()
+{
+	if (obj[sel_obj].type == "binput")
+	{
+		obj[sel_obj].output = get_value("binput_output");
+	}
+
+	if (obj[sel_obj].type == "httpsource")
+	{
+		obj[sel_obj].source_name = document.getElementById("httpsource_name").value;
+	}
+	
+	
+	draw_display();
+
+	solve_system();
+
+	return false;
+}
+
+
+function set_mode(m)
+{
+	ui_mode = m;
+}
+
+
+function set_addmode(obj_type)
+{
+	//ui_mode = "add_object";
+	//ui_addtype = obj_type;
+	
+
+	var index = add_object(obj, get_world_x(100), get_world_y(100), obj_type, 0, 0, 1); 	
+	
+	
+	
+}
+
+
+function reset()
+{
+	obj.length = 0;
+
+	solve_system();
+
+	draw_display();
+	
+	
+	
+	zoom = 1;
+	x_ofs = 0;
+	y_ofs = 0;
+}
+
+
+/* Creates a test system */
+function test_gate()
+{
+	obj.length = 0;
+
+	add_object(obj, 100, 150, "binput", 0);
+	add_object(obj, 100, 250, "binput", 0);
+	add_object(obj, 200, 200, "andgate", 0);
+	add_object(obj, 300, 200, "boutput", 0);
+
+	object_connect(1, 5);
+	object_connect(3, 6);
+	object_connect(7, 9);
+	
+	solve_system();
+}
+
+
+function test_scope()
+{
+	obj.length = 0;
+
+	add_object(obj, 100, 200, "timebase", 0);
+	add_object(obj, 200, 150, "sine", 0);
+	add_object(obj, 200, 250, "cosine", 0);
+	add_object(obj, 400, 125, "xyscope", 0);
+
+	object_connect(1, 3);
+	object_connect(1, 6);
+
+
+	object_connect(4, 9);
+	object_connect(7, 10);
+	
+	solve_system();
+}
+
+</script>
+</head>
+
+<body onload="start()">
+
+  <div style="width:150px; float:left; border: 0px black solid;">   
+
+  <span class="header">IO</span><br>
+  <span onclick="set_addmode('binput');"  class="main_link">Source</span><br>
+  <span onclick="set_addmode('boutput');" class="main_link">D Output</span><br>
+  <span onclick="set_addmode('aoutput');" class="main_link">A Output</span><br>
+  <span onclick="set_addmode('httpsource');" class="main_link">HTTP Val</span><br>
+  
+  <span class="header">Gates</span><br>
+  <span onclick="set_addmode('notgate');" class="main_link">Not</span><br>
+  <span onclick="set_addmode('andgate');" class="main_link">And</span><br>
+  <span onclick="set_addmode('orgate');" class="main_link"> Or </span><br>
+  <span onclick="set_addmode('xorgate');" class="main_link">XOr</span><br>
+
+  <span class="header">Math</span><br>
+  <span onclick="set_addmode('mult');" class="main_link"> Mult</span><br>
+  <span onclick="set_addmode('div');" class="main_link"> Div</span><br>
+  <span onclick="set_addmode('add');" class="main_link">  Add</span><br>
+  <span onclick="set_addmode('sub');" class="main_link">  Sub</span><br>
+  <span onclick="set_addmode('power');" class="main_link"> Power</span><br>
+  <span onclick="set_addmode('sine');" class="main_link"> Sine</span><br>
+  <span onclick="set_addmode('cosine');" class="main_link">Cosine</span><br>
+
+  <span class="header">Utility</span><br>
+  <span onclick="set_addmode('timebase');" class="main_link"> Timebase </span><br>
+  <span onclick="set_addmode('xyscope');" class="main_link"> XYScope </span><br>
+  <span onclick="set_addmode('guide');" class="main_link"> Terminal </span><br>
+
+  <span class="header">World</span><br>
+  <span onclick="set_addmode('block');" class="main_link"> Block </span><br>
+  <span onclick="set_addmode('vbar');" class="main_link"> Vert Bar </span><br>
+  <span onclick="set_addmode('hbar');" class="main_link"> Horz Bar </span><br>
+
+
+  <span class="header">Tools</span><br>
+  <span onclick="set_mode('add_pipe');" class="main_link"> Wire</span><br>
+  <span onclick="set_mode('unhook');" class="main_link">  <font color="#dd3333">Unhook</font></span><br>
+  <span onclick="set_mode('delete');" class="main_link"> <font color="#dd3333">Delete</font></span><br>
+
+  <span class="header">Properties</span><br>
+
+  <div id="binput_data" style="display:none;">
+	<b>Type: binput</b>
+
+	<table>
+	<tbody><tr><td>Output: </td><td><input id="binput_output" size="6&quot;" type="text"></td></tr> 
+	</tbody></table>
+	<input value="Save" onclick="save_properties();" type="submit">
+  </div>
+  
+  
+  <div id="httpsource_data" style="display:none;">
+	<b>Type: httpsource</b>
+
+	<table>
+	<tbody>
+	<tr><td>Data Name: </td></tr>
+	
+	<tr><td><input id="httpsource_name" size="6&quot;" type="text"></td></tr> 
+	</tbody></table>
+	
+	<input value="Save" onclick="save_properties();" type="submit">
+  </div>  
+  
+  
+
+  <div id="boutput_data" style="display:none;">
+	<b>Type: boutput</b>
+	<table>
+	<tbody><tr><td>Pin:</td><td> <input id="boutput_pin" size="6&quot;" type="text"></td> </tr>
+	</tbody></table>
+    <input value="Save" onclick="save_properties();" type="submit">
+  </div>
+
+  <span class="header">System</span><br>
+  <span onclick="reset();" class="main_link">Reset</span><br>
+  <span onclick="backend_load();" class="main_link">Reload</span><br>
+  
+  
+
+  <span class="header">Tests</span><br>
+  <span onclick="test_gate();" class="main_link">Gate</span><br>
+  <span onclick="test_scope();" class="main_link">Scope</span><br>
+
+  <span class="header">View</span><br>
+  <span onclick="set_guide('show');" class="main_link">Show Term</span><br>
+  <span onclick="set_guide('hide');" class="main_link">Hide Term</span><br>
+
+  <div id="debug">
+  </div>
+
+  </div>
+
+<canvas id="canvas" style="position:absolute; top: 0; left:120;  border: black 1px solid;" width="1200" height="768"></canvas>
+
+</body></html>
